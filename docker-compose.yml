@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: rag_app
+    volumes:
+      - ./:/app
+    ports:
+      - "8888:8888"
+    depends_on:
+      - ollama
+      - postgres
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [ gpu ]
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: ragdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  pgdata:

@@ -1,0 +1,14 @@
+pandas
+psycopg2-binary
+requests
+jupyterlab
+transformers
+accelerate
+bitsandbytes
+peft
+sentencepiece
+huggingface_hub
+torch
+torchvision
+torchaudio
+jupyter
