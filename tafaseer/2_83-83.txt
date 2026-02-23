@@ -1,1 +1,0 @@
-- Include surah or ayah numbers in the response

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 360" preserveAspectRatio="none">
+  <!-- This SVG is used as an overlay to recreate the curved parchment edge -->
+  <defs>
+    <linearGradient id="paper" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#f6f3eb"></stop>
+      <stop offset="1" stop-color="#efe8d9"></stop>
+    </linearGradient>
+
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.18"></feDropShadow>
+    </filter>
+
+    <!-- light pattern -->
+    <pattern id="arabesque" width="120" height="120" patternUnits="userSpaceOnUse" opacity="0.18">
+      <path d="M60 10c20 0 20 20 40 20s20-20 40-20v20c-20 0-20 20-40 20S80 30 60 30 40 50 20 50 0 30 0 30V10c20 0 20 20 40 20S40 10 60 10Z" fill="none" stroke="#cbb684" stroke-width="2"></path>
+      <circle cx="60" cy="60" r="22" fill="none" stroke="#cbb684" stroke-width="2"></circle>
+      <path d="M60 38v44M38 60h44" stroke="#cbb684" stroke-width="2"></path>
+    </pattern>
+
+    <mask id="topCut">
+      <rect width="1400" height="360" fill="white"></rect>
+      <!-- carve-out curve on the top right like the screenshot -->
+      <path d="M860,40
+               C1010,0 1120,10 1400,0
+               L1400,0 L1400,190
+               C1190,190 1090,240 980,290
+               C900,325 860,335 790,340
+               C680,350 620,300 610,250
+               C598,190 700,80 860,40Z" fill="black"></path>
+    </mask>
+  </defs>
+
+  <!-- parchment base -->
+  <g filter="url(#shadow)">
+    <rect x="0" y="0" width="1400" height="360" rx="0" fill="url(#paper)" mask="url(#topCut)"></rect>
+    <!-- ornate pattern mainly on the left/top, like your image -->
+    <rect x="0" y="0" width="900" height="260" fill="url(#arabesque)" mask="url(#topCut)"></rect>
+  </g>
+
+  <!-- subtle gold edge line along the curve -->
+  <path d="M0,210
+           C220,120 420,140 560,170
+           C660,190 740,195 820,180
+           C960,150 1090,90 1400,60" fill="none" stroke="#cbb684" stroke-width="3" opacity="0.6"></path>
+
+  <!-- bottom curved corner hint on the right (like screenshot) -->
+  <path d="M1040,280
+           C1120,250 1220,240 1400,240" fill="none" stroke="#cbb684" stroke-width="3" opacity="0.45"></path>
+</svg>
