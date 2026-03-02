@@ -102,7 +102,7 @@ flowchart TB
   %% Offline outputs feeding production
   IDX -.feeds.-> PC
   EMBSEL -.used by.-> EMBQ
-  RLHF -.deploy.-> GEN```
+  RLHF -.deploy.-> GEN
 ```
 
 ---
