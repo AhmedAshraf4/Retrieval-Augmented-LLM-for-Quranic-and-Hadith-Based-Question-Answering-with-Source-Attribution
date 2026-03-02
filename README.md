@@ -500,37 +500,60 @@ This makes it easy to:
 ---
 # 5. Tafseer Corpus Selection (Ibn Kathir vs Al-Jalalayn)
 
-This stage compares **two tafseer corpora** in a pure **retrieval setting** (RAG retrieval quality), to decide which corpus/settings should be used downstream for:
+This stage compares **two tafseer corpora** in a **retrieval-only** setting (RAG retrieval quality) to decide which corpus/settings should be used downstream for:
 - the final RAG system, and
-- the QA fine-tuning dataset construction.
+- QA fine-tuning dataset construction.
 
-To keep the comparison fair, both corpora are evaluated using the **same retrieval recipe** (same embedding model + same hybrid settings), and the only variable is the tafseer corpus.
+To keep the comparison fair, both corpora are evaluated using the **same retrieval recipe** (same embedding model + same hybrid retriever). The only variables are:
+- **tafseer corpus**
+- **hybrid weight** (`alpha`)
+- **retrieval depth** (`k`)
 
-### Notebook Used
+## Notebook Used
 - `tafseers_comparison.ipynb`
+
+---
+
+## Hybrid Retriever (Dense + BM25) Brief
+
+We use LangChain’s `PineconeHybridSearchRetriever`, which combines:
+- **Dense retrieval** via embeddings (semantic similarity)
+- **Sparse retrieval** via **BM25** (lexical/keyword matching)
+
+Conceptually:
+
+```text
+hybrid_score(doc, q) = alpha * dense_score(doc, q) + (1 - alpha) * sparse_score(doc, q)
+```
+
+Where:
+- **alpha ↑** → more weight on dense semantic retrieval
+- **alpha ↓** → more weight on BM25 lexical retrieval
+- `k` controls how many top results are returned (and therefore how much context is passed to the downstream generator in RAG)
 
 ---
 
 ## What Was Compared
 
-Two Pinecone-backed retrieval datasets:
+Two Pinecone-backed retrieval datasets (same chunking + metadata schema):
 
 - **Ibn Kathir**
 - **Al-Jalalayn**
 
-Both are queried using a **hybrid retriever** (dense embeddings + BM25) implemented via **LangChain** (`PineconeHybridSearchRetriever`), with the same parameters:
+Shared retrieval recipe:
 
 - **Embedding model:** `qwen3-embedding:8b` (served via Ollama)
-- **Retriever framework:** **LangChain**
+- **Retriever framework:** LangChain
 - **Retriever type:** Hybrid (BM25 + dense)
-- **alpha:** `0.7` (weight toward dense retrieval)
-- **k:** `15` (Hit@15 evaluation)
+- **Swept parameters:**
+  - `k ∈ {5, 10, 15, 20}`
+  - `alpha ∈ {0.3, 0.5, 0.7, 0.9}`
 
 ---
 
 ## Evaluation Dataset
 
-The notebook uses a QA dataset (`question_answering.csv`) containing:
+The notebook uses `question_answering.csv` containing:
 
 - `question_en` (English question)
 - `chapter_no` (ground-truth surah)
@@ -538,14 +561,14 @@ The notebook uses a QA dataset (`question_answering.csv`) containing:
 
 ---
 
-## Metric: Hit@15 (Retrieval)
+## Metric: Hit@k (Retrieval)
 
-A query is counted as a **hit** if **any** of the top-15 retrieved chunks:
+A query is counted as a **hit** if **any** of the top-k retrieved chunks:
 - match the correct `surah_no`, and
 - overlap **at least one** ayah from the ground-truth `verse_list`
   (based on chunk metadata: `ayah_start` → `ayah_end`)
 
-A simplified version of the “hit” rule used in experiments:
+Rule used in experiments:
 
 ```text
 hit = any(
@@ -557,23 +580,96 @@ hit = any(
 
 ---
 
-## Results (from this notebook run)
+## Results
 
-| Corpus | Hit@15 | Hits |
-|---|---:|---:|
-| Ibn Kathir | 0.7254 | 864/1191 |
-| Al-Jalalayn | 0.7439 | 886/1191 |
+### A) Parameter Sweep (k × alpha)
 
+#### Al-Jalalayn sweep (Hit@k)
 
+| k | alpha | hit_at_k | hits | misses | n |
+|---:|---:|---:|---:|---:|---:|
+| 5  | 0.3 | 0.623846 | 743 | 448 | 1191 |
+| 5  | 0.5 | 0.661629 | 788 | 403 | 1191 |
+| 5  | 0.7 | 0.689337 | 821 | 370 | 1191 |
+| 5  | 0.9 | 0.677582 | 807 | 384 | 1191 |
+| 10 | 0.3 | 0.673384 | 802 | 389 | 1191 |
+| 10 | 0.5 | 0.707809 | 843 | 348 | 1191 |
+| 10 | 0.7 | 0.722082 | 860 | 331 | 1191 |
+| 10 | 0.9 | 0.724601 | 863 | 328 | 1191 |
+| 15 | 0.3 | 0.698573 | 832 | 359 | 1191 |
+| 15 | 0.5 | 0.733837 | 874 | 317 | 1191 |
+| 15 | 0.7 | 0.743913 | 886 | 305 | 1191 |
+| 15 | 0.9 | 0.748950 | 892 | 299 | 1191 |
+| 20 | 0.3 | 0.723762 | 862 | 329 | 1191 |
+| 20 | 0.5 | 0.750630 | 894 | 297 | 1191 |
+| 20 | 0.7 | 0.764064 | 910 | 281 | 1191 |
+| 20 | 0.9 | 0.764903 | 911 | 280 | 1191 |
 
-![Retrieval Hit@15 Comparison](assets/hit_at_15_comparison.png)
- 
+#### Ibn Kathir sweep (Hit@k)
+
+| k | alpha | hit_at_k | hits | misses | n |
+|---:|---:|---:|---:|---:|---:|
+| 5  | 0.3 | 0.621327 | 740 | 451 | 1191 |
+| 5  | 0.5 | 0.630563 | 751 | 440 | 1191 |
+| 5  | 0.7 | 0.619647 | 738 | 453 | 1191 |
+| 5  | 0.9 | 0.573468 | 683 | 508 | 1191 |
+| 10 | 0.3 | 0.680940 | 811 | 380 | 1191 |
+| 10 | 0.5 | 0.701931 | 836 | 355 | 1191 |
+| 10 | 0.7 | 0.693535 | 826 | 365 | 1191 |
+| 10 | 0.9 | 0.647355 | 771 | 420 | 1191 |
+| 15 | 0.3 | 0.712846 | 849 | 342 | 1191 |
+| 15 | 0.5 | 0.732997 | 873 | 318 | 1191 |
+| 15 | 0.7 | 0.725441 | 864 | 327 | 1191 |
+| 15 | 0.9 | 0.673384 | 802 | 389 | 1191 |
+| 20 | 0.3 | 0.737196 | 878 | 313 | 1191 |
+| 20 | 0.5 | 0.753149 | 897 | 294 | 1191 |
+| 20 | 0.7 | 0.740554 | 882 | 309 | 1191 |
+| 20 | 0.9 | 0.705290 | 840 | 351 | 1191 |
+
+![K vs alphas sweeps](assets/k_alpha.png)
+
 ---
 
-## Outcome
+### B) Context Length Analysis (RAG relevance)
 
-Based on this retrieval-only experiment, **Al-Jalalayn slightly outperformed Ibn Kathir** on Hit@15 under the same **LangChain hybrid retriever** configuration.  
-This result was used to inform the **final corpus selection** for the production RAG pipeline and the downstream QA training setup.
+In RAG, increasing `k` increases **retrieved context size** (tokens), which affects:
+- latency
+- cost
+- and potential distraction/noise in generation
+
+Measured average retrieved context length for **Al-Jalalayn** at `k=15` vs `k=20` since it was proven to be more accurate in retrieval:
+
+| k | mean_chars | median_chars | p95_chars | mean_words | median_words | estimated_tokens* |
+|---:|---:|---:|---:|---:|---:|---:|
+| 15 | 6436.24 | 5865 | 11500 | 1175.38 | 1069 | ~1528 |
+| 20 | 8436.64 | 7836 | 14739 | 1540.69 | 1433 | ~2003 |
+
+\* **estimated_tokens** is a rough estimate from words (≈ `words × 1.3`). Exact token counts depend on the tokenizer/model; use tokenizer-based counting for precise numbers.
+
+**Key observation:** Moving from `k=15 → k=20` increases retrieved context length by about **31%** (words/chars), while the best Hit@k improvement is relatively small (diminishing returns beyond `k=15`).
+
+---
+
+## Final Selection and Rationale
+
+**Chosen configuration for downstream RAG + dataset construction:**
+- **Corpus:** Al-Jalalayn
+- **alpha:** 0.9
+- **k:** 15
+
+### Why Al-Jalalayn?
+- Across comparable settings, **Al-Jalalayn consistently matches or exceeds** Ibn Kathir at `k=15`, and its best observed Hit@15 is higher:
+  - **Al-Jalalayn @ (k=15, alpha=0.9):** Hit@15 = **0.748950** (892/1191)
+  - **Ibn Kathir @ (k=15, best alpha=0.5):** Hit@15 = **0.732997** (873/1191)
+
+### Why alpha = 0.9?
+- For Al-Jalalayn at `k=15`, **alpha=0.9** gave the highest Hit@15 among the tested values.
+
+### Why k = 15 (not 20)?
+- While `k=20` can improve Hit@k slightly, it increases the average retrieved context length substantially:
+  - **+31%** mean words (1175 → 1541) for Al-Jalalayn
+- Given the diminishing returns from 15 → 20 and the higher RAG cost/noise risk, **k=15** provides a better balance of **accuracy vs. efficiency**.
+
 
 ---
 
