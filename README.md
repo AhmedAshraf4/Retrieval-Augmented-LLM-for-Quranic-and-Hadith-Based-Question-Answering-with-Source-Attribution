@@ -24,7 +24,7 @@ Instead of relying only on the model’s internal knowledge, the chatbot retriev
 - [5. Tafseer Corpus Selection (Ibn Kathir vs Al-Jalalayn)](#5-tafseer-corpus-selection-ibn-kathir-vs-al-jalalayn)
 - [6. Model Training (LoRA Fine-Tuning with Retrieval-Grounded Data)](#6-model-training-lora-fine-tuning-with-retrieval-grounded-data)
 - [7. Evaluation (Cosine Similarity + LLM-as-Judge)](#7-evaluation-cosine-similarity--llm-as-judge)
-- [8. Deployment (FastAPI + React)](#8-deployment-fastapi--react)
+- [8. Summarization and Deployment (FastAPI + React)](#8-summarization-and-deployment-fastapi--react)
 
 ---
 ## Project Overview
@@ -1009,3 +1009,286 @@ POST /api/generate (Ollama)
 - format: { "type": "object", "properties": { "score": ... }, ... }
 → returns: { "score": 0..5 }
 ```
+---
+# 8. Summarization and Deployment (FastAPI + React)
+
+This stage turns the retrieval-grounded Quran/Tafsir system into an interactive chatbot application with **conversation memory**, **summary-aware retrieval**, and a full **deployment stack** built with **FastAPI** for the backend and **React** for the frontend.
+
+The deployment is designed so that the chatbot can answer the **first question directly from retrieved evidence**, while handling **follow-up questions** more intelligently by summarizing prior conversation and using that summary to improve retrieval for the next turn.
+
+---
+
+## A) System Overview
+
+The deployed application consists of three main layers:
+
+- **React frontend** — provides the chat interface for user interaction
+- **FastAPI backend** — manages sessions, retrieval, summarization, and answer generation
+- **RAG pipeline** — performs Pinecone hybrid retrieval, then grounds answers in retrieved Qur'an/Tafsir context
+
+The backend exposes a `/chat` endpoint that receives a user question, manages session state, retrieves supporting context, and returns a grounded answer along with source passages.
+
+---
+
+## B) First-Turn Behavior
+
+For the **first user question** in a new chat session:
+
+1. The frontend sends the user question to the FastAPI backend.
+2. The backend uses the question **directly** as the retrieval query.
+3. The hybrid retriever searches Pinecone using:
+   - **dense embeddings** via `qwen3-embedding:8b`
+   - **sparse BM25** scores from the prebuilt Jalalayn corpus encoder
+4. Retrieved passages are formatted and sent to the answer model.
+5. The answer model generates a response using **only the retrieved context**.
+
+This keeps the first response simple and fully retrieval-grounded.
+
+---
+
+## C) Follow-Up Summarization Pipeline
+
+For **subsequent questions in the same session**, the system adds a summarization step before retrieval.
+
+### Why summarization is needed
+
+User follow-up questions are often incomplete on their own.  
+They may contain:
+
+- pronouns such as *he*, *they*, *that*
+- ellipsis such as *and what about later?*
+- references to earlier topics without repeating them explicitly
+
+If the retriever receives only the follow-up question, it may miss important context.  
+To solve this, the backend first summarizes the previous conversation, then uses that summary to build a better retrieval query.
+
+### Follow-up workflow
+
+1. Load previous turns from the active session
+2. Summarize the chat history using **Ollama `llama3.2:1b`**
+3. Generate a **RAG retrieval query** from:
+   - the summary
+   - the new question
+4. Retrieve passages from Pinecone using the rewritten query
+5. Send the following to the final answer model:
+   - **conversation summary**
+   - **new user question**
+   - **retrieved context**
+6. Generate a grounded answer
+
+### Important design rule
+
+The **summary is used only to resolve conversational references**.  
+It is **not treated as evidence**.
+
+Only the **retrieved context** is allowed to support factual claims in the answer.
+
+---
+
+## D) Summarization + Retrieval Diagram
+
+```mermaid
+flowchart TD
+    A[User sends first question] --> B[FastAPI /chat endpoint]
+    B --> C{Is this the first turn?}
+
+    C -->|Yes| D[Use question directly as retrieval query]
+    D --> E[Hybrid retrieval from Pinecone]
+    E --> F[Retrieved Qur'an and Tafsir passages]
+    F --> G[Answer model generates grounded response]
+    G --> H[Return answer + sources to frontend]
+
+    C -->|No| I[Load previous session history]
+    I --> J[Summarize prior conversation with llama3.2:1b]
+    J --> K[Generate RAG query from summary + new question]
+    K --> L[Hybrid retrieval from Pinecone]
+    L --> M[Retrieved Qur'an and Tafsir passages]
+    M --> N[Answer model receives summary + retrieved context + new question]
+    N --> O[Grounded response returned to frontend]
+```
+
+---
+
+## E) Backend Implementation (FastAPI)
+
+The FastAPI backend is responsible for:
+
+- serving the `/chat` endpoint
+- maintaining in-memory chat sessions
+- detecting whether a turn is the first question or a follow-up
+- summarizing prior conversation when needed
+- generating retrieval queries for follow-up turns
+- calling the hybrid Pinecone retriever
+- invoking the Ollama models for summarization and answer generation
+
+### FastAPI endpoints
+
+The backend includes:
+
+- `POST /chat` — main chat endpoint
+- `GET /session/{session_id}` — inspect stored session history
+- `DELETE /session/{session_id}` — clear a session
+- `GET /` — health/status route
+
+### Session handling
+
+Each conversation is assigned a `session_id`.  
+The backend stores the conversation in memory as alternating user and assistant turns.
+
+This allows the application to:
+
+- preserve chat continuity
+- summarize earlier messages for follow-up retrieval
+- reset context when starting a new conversation
+
+---
+
+## F) Retrieval Stack
+
+The deployed system uses **hybrid retrieval** over the Jalalayn-based Quran/Tafsir corpus.
+
+### Components
+
+- **Pinecone index** for vector and sparse retrieval
+- **Ollama embeddings** using `qwen3-embedding:8b`
+- **BM25 sparse encoder** loaded from `bm25_quran_jal.pkl`
+- **LangChain PineconeHybridSearchRetriever**
+
+### Retrieval settings
+
+- `top_k = 10`
+- `alpha = 0.7`
+
+This setup balances:
+
+- **semantic similarity** from dense embeddings
+- **exact lexical overlap** from sparse retrieval
+
+which is especially useful for verse-based and tafsir-based questions.
+
+---
+
+## G) Prompting Strategy
+
+The deployment uses a **two-stage prompting strategy**:
+
+### 1) Answer-generation prompt
+
+The main answering model is instructed to:
+
+- answer using **only retrieved context**
+- avoid outside knowledge
+- avoid guessing surah names, ayah numbers, or citations
+- return `INSUFFICIENT_CONTEXT` if evidence is missing
+- separate answer text from supporting evidence
+
+### 2) Follow-up summarization prompts
+
+A smaller Ollama model (**`llama3.2:1b`**) is used for:
+
+- summarizing chat history
+- generating a better retrieval query for follow-up questions
+
+This keeps the summarization/query-rewrite step lightweight while leaving the main grounded answer generation to the main RAG answering model.
+
+---
+
+## H) Frontend Implementation (React)
+
+The frontend is built with **React** and provides a clean chat-style user interface.
+
+### Frontend responsibilities
+
+- render the chat conversation
+- send the latest user question to the backend
+- preserve `session_id` between turns
+- display the assistant response
+- start a fresh session when the user clicks **New Chat**
+
+### Request flow
+
+The frontend sends requests to:
+
+```text
+/api/chat
+```
+
+Using the Vite proxy configuration, requests are forwarded to the FastAPI backend at:
+
+```text
+http://localhost:8000/chat
+```
+
+The frontend extracts the latest user message from the chat history and sends:
+
+```json
+{
+  "question": "<latest user message>",
+  "session_id": "<current session id or null>"
+}
+```
+
+The backend responds with:
+
+- `session_id`
+- `question`
+- `generated_rag_query`
+- `history_summary`
+- `answer`
+- `sources`
+
+The frontend then appends the `answer` to the visible chat.
+
+---
+
+## I) Deployment Flow
+
+The application is run locally with:
+
+- **FastAPI backend**
+- **React frontend**
+- **Ollama server**
+- **Pinecone-hosted retrieval index**
+
+### Backend startup
+
+```bash
+uvicorn app:app --reload
+```
+
+### Frontend startup
+
+```bash
+npm run dev
+```
+
+### Result
+
+This creates a working end-to-end Quran/Tafsir chatbot where:
+
+- the **first turn** uses direct retrieval
+- **follow-up turns** use summary-aware retrieval
+- answers remain grounded in retrieved Qur'an and Tafsir evidence
+- the user interacts through a modern React chat interface
+
+---
+
+## J) Chatbot Interface
+
+
+![Noor Chatbot Interface](assets/chatbot.png)
+
+---
+
+## K) Summary
+
+This stage connects the research pipeline to a usable application by combining:
+
+- **FastAPI** for backend orchestration
+- **React** for the chat interface
+- **Pinecone hybrid retrieval** for evidence fetching
+- **Ollama summarization** for follow-up context compression
+- **summary-aware query rewriting** for better conversational retrieval
+- **retrieval-grounded generation** for final answers
+
+The result is a deployed conversational Quran/Tafsir assistant that can handle both **standalone questions** and **multi-turn follow-up questions** while remaining grounded in retrieved evidence.
