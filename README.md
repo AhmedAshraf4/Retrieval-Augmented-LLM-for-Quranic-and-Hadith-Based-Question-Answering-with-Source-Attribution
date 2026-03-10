@@ -673,35 +673,82 @@ Measured average retrieved context length for **Al-Jalalayn** at `k=15` vs `k=20
 
 ---
 
-# 6. Model Training (LoRA Fine-Tuning with Retrieval-Grounded Data)
+# 6. Model Training (QLoRA Fine-Tuning with Retrieval-Grounded Data)
 
-This stage fine-tunes **Llama 3.2 3B Instruct** using **QLoRA/LoRA** on a dataset that is **retrieval-grounded** (i.e., each training example includes **question + retrieved context + target answer**).  
-The goal is to teach the model to answer **only from evidence** provided by the RAG retriever, instead of relying on parametric knowledge.
+This stage fine-tunes **Llama 3.2 3B Instruct** using **QLoRA** on a **retrieval-grounded dataset**. Each training example contains a **question, retrieved context passages, and a reference answer**.
 
-### Notebook Used
-- `lora_train.ipynb`
+The objective is to train the model to behave as a **retrieval-grounded assistant** that answers **only from evidence provided by the RAG retriever**, avoiding reliance on parametric knowledge.
+
+## Notebook Used
+
+`lora_train.ipynb`
 
 ---
 
 ## A) LoRA Dataset Preparation (RAG-Conditioned)
 
-Before training, a LoRA/SFT dataset is prepared where each sample contains:
+The supervised fine-tuning dataset contains three main fields:
 
-- `question_en` — the user question
-- `context` — retrieved passages (with surah/ayah metadata) from the selected tafseer corpus
-- `answer_en` — the reference answer for supervised fine-tuning
+* **`question_en`** — the user question
+* **`context`** — retrieved passages from Qur'an translations and Tafsir (e.g., *Tafsir al-Jalalayn*)
+* **`answer_en`** — the reference answer used for supervision
 
-This is “RAG-aware” training data: the model learns the behavior **“answer using ONLY the provided context”**.
+The model is trained in a **RAG-aware format**, meaning it must generate answers **only from the supplied context**.
 
-**Training System Prompt (excerpt)**
-- Retrieval-grounded assistant
-- Must not use outside knowledge
-- If evidence is missing → output `INSUFFICIENT_CONTEXT`
-- Output includes **Answer** + **Evidence (citations Surah/Ayah ranges)**
+### Dataset Splitting
 
-**Example training message structure (chat formatted)**
+The dataset is split into:
+
+* **Train set**
+* **Validation set**
+* **Test set**
+
 ```text
-System: <retrieval-grounded rules>
+80% train
+10% validation
+10% test
+```
+
+This enables monitoring **validation loss during training**.
+
+---
+
+## B) Training Prompt Design
+
+The system prompt enforces **strict retrieval grounding**.
+
+Key rules include:
+
+* Only use the **provided retrieved context**
+* Never rely on **outside knowledge**
+* Do **not hallucinate verse numbers or citations**
+* If evidence is missing, output **`INSUFFICIENT_CONTEXT`**
+* Every claim must include **Surah/Ayah citation**
+* Tafsir explanations must be labeled clearly
+
+### System Prompt (excerpt)
+
+```text
+You are a retrieval-grounded Quran QA assistant.
+
+Rules:
+1. Do NOT use outside knowledge.
+2. Every claim must be supported by retrieved context.
+3. Do NOT invent verse numbers or citations.
+4. If the context is insufficient output: INSUFFICIENT_CONTEXT.
+```
+
+---
+
+## C) Chat Training Format
+
+Training examples are converted into **chat format** before tokenization.
+
+Example structure:
+
+```text
+System:
+<retrieval grounded instructions>
 
 User:
 Question:
@@ -718,53 +765,143 @@ Assistant:
 
 ---
 
-## B) LoRA / QLoRA Fine-Tuning
+## D) Tokenization
 
-### Base Model
-- `meta-llama/Llama-3.2-3B-Instruct` (downloaded from Hugging Face)
+Inputs are tokenized with:
 
-### Efficient Fine-Tuning Setup
-- **4-bit quantization** (bitsandbytes, NF4) to fit training on limited GPU memory
-- **LoRA adapters** trained on key transformer projection layers:
-  - `q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`
+* **Maximum sequence length:** `2048`
+* **Padding:** `max_length`
+* **Loss masking:** padding tokens are ignored (`labels = -100`)
 
-**LoRA configuration used**
-- `r = 8`
-- `lora_alpha = 16`
-- `lora_dropout = 0.1`
-
-### Tokenization / Sequence Length
-- `max_length = 2048`
-- Padding tokens are ignored in loss (`labels = -100` for padding positions)
-
-### Training hyperparameters (important ones)
-- `per_device_train_batch_size = 1`
-- `gradient_accumulation_steps = 16`
-- `learning_rate = 2e-4`
-- `num_train_epochs = 1`
-- Mixed precision: `bf16 = True` (when supported)
+This ensures training focuses only on meaningful tokens.
 
 ---
 
-## Outputs
+## E) Base Model
 
-### LoRA Adapter
-- Saved adapter directory:
-  - `./qlora_llama32_quran/`
+The base model used for fine-tuning:
 
-This adapter is later loaded on top of the base model for inference (and later RLHF stages).
+```text
+meta-llama/Llama-3.2-3B-Instruct
+```
+
+Loaded locally from disk.
 
 ---
 
-## Results
+## F) QLoRA Training Setup
 
-The notebook includes a simple validation-loss comparison to confirm training is learning:
+To enable training on limited GPU memory, the model uses **4-bit quantization** via **bitsandbytes**.
 
-- **Before training**: ~`3.29` validation loss  
-- **After 1 epoch**: ~`0.92` validation loss
+### Quantization Configuration
 
-![Validation loss Comparison](assets/validation_loss.png)
+* **4-bit NF4 quantization**
+* **Double quantization enabled**
+* Compute dtype: `bfloat16` (if supported) or `float16`
 
+---
+
+## G) LoRA Adapter Configuration
+
+LoRA adapters are trained on key transformer projection layers:
+
+```text
+q_proj
+k_proj
+v_proj
+o_proj
+gate_proj
+up_proj
+down_proj
+```
+
+### LoRA Hyperparameters
+
+| Parameter | Value |
+| --------- | ----- |
+| r         | 8     |
+| alpha     | 16    |
+| dropout   | 0.1   |
+| bias      | none  |
+
+---
+
+## H) Training Hyperparameters
+
+| Parameter             | Value       |
+| --------------------- | ----------- |
+| Batch size            | 1           |
+| Gradient accumulation | 16          |
+| Learning rate         | 3e-5        |
+| Epochs                | 1           |
+| Max sequence length   | 2048        |
+| Precision             | bf16        |
+
+Training uses the Hugging Face **Trainer API**.
+
+---
+
+## I) Validation Monitoring
+
+The notebook evaluates both **training loss** and **validation loss** to verify that optimization is progressing in a stable and meaningful way.
+
+Example workflow:
+
+1. Evaluate the baseline model
+2. Fine-tune for 1 epoch
+3. Re-evaluate on the validation split
+4. Plot train and validation losses across training
+
+```text
+Before training: eval_loss ≈ 2.15
+After training:  eval_loss ≈ 1.58
+```
+
+The loss curves show that **both training loss and validation loss decrease over time**, which is a strong indication that the model is learning the retrieval-grounded task effectively. Since the validation loss follows the same downward trend as the training loss, the model appears to be improving not only on the training set but also on held-out data, suggesting **healthy generalization rather than simple memorization**.
+
+![Training and Validation Loss](assets/lora_loss.png)
+
+The plot indicates a stable training process: the **training loss steadily declines**, while the **validation loss also trends downward without diverging sharply**. This is the desired behavior during fine-tuning, as it suggests that the adapter is learning useful task-specific patterns from the retrieval-grounded dataset and that there is **no clear sign of severe overfitting** in this training run.
+
+
+---
+
+## J) Saved Outputs
+
+### 1) LoRA Adapter
+
+Saved to:
+
+```text
+./qlora_llama32_quran
+```
+
+This directory contains the **LoRA adapter weights**.
+
+### 2) Merged Model
+
+After training, the LoRA adapter is **merged into the base model** to produce a standalone model.
+
+Output directory:
+
+```text
+./llama32_quran_merged_hf
+```
+
+This merged model can be loaded directly for **inference without PEFT**.
+
+---
+
+## Summary
+
+This stage trains a **retrieval-grounded Quran QA model** by combining:
+
+* **QLoRA parameter-efficient fine-tuning**
+* **strict retrieval-only prompting**
+* **RAG-conditioned supervised training data**
+* **validation monitoring and loss visualization**
+
+The result is a **lightweight adapter-based model** that learns to produce answers **only when supported by retrieved Qur'an or Tafsir evidence**.
 
 ---
 # 7. Evaluation (Cosine Similarity + LLM-as-Judge)
